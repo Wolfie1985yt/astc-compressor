@@ -23,7 +23,7 @@ class Main
 	private static final VERSION:String = '1.0.0';
 
 	@:noCompletion
-	private static final SUPPORTED_EXTENSIONS:Array<String> = ['bmp', 'jpg', 'jpeg', 'jpe', 'jfif', 'png', 'tga', 'hdr', 'exr'];
+	private static final SUPPORTED_EXTENSIONS:Array<String> = ['bmp', 'jpg', 'jpeg', 'jpe', 'jfif', 'png', 'tga', 'hdr', 'exr', 'webp'];
 
 	@:noCompletion
 	private static final COMPRESSION:Array<String> = ['exhaustive', 'verythorough', 'thorough', 'medium', 'fast', 'fastest'];
@@ -42,6 +42,9 @@ class Main
 
 	@:noCompletion
 	private static var LIB_PATH:String = '';
+
+	@:noCompletion
+	private static var DWEBP_PATH:String = '';
 
 	@:noCompletion
 	private static var COMPRESSION_DATA:Null<ComppressionData> = null;
@@ -188,50 +191,62 @@ class Main
 	}
 
 	@:noCompletion
-	private static function prepareEncoder():Void
-	{
-		switch (Sys.systemName())
-		{
-			case 'Windows':
-				if (ARCHITECTURE == Architecture.X64)
-				{
-					ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Windows/x64/astcenc-sse2.exe']);
-				}
-				else if (ARCHITECTURE == Architecture.ARM64)
-				{
-					ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Windows/arm64/astcenc-neon.exe']);
-				}
+    private static function prepareEncoder():Void
+    {
+        switch (Sys.systemName())
+        {
+            case 'Windows':
+                if (ARCHITECTURE == Architecture.X64)
+                {
+                    ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Windows/x64/astcenc-sse2.exe']);
+                    DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Windows/x64/dwebp.exe']);
+                }
+                else if (ARCHITECTURE == Architecture.ARM64)
+                {
+                    ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Windows/arm64/astcenc-neon.exe']);
+                    DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Windows/arm64/dwebp.exe']);
+                }
 
-				ASTC_ENCODER_PATH = ASTC_ENCODER_PATH.replace('/', '\\');
-			case 'Linux':
-				if (ARCHITECTURE == Architecture.X64)
-				{
-					ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Linux/x64/astcenc-sse2']);
-				}
-				else if (ARCHITECTURE == Architecture.ARM64)
-				{
-					ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Linux/arm64/astcenc-neon']);
-				}
-			case 'Mac':
-				ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/MacOS/astcenc']);
-		}
+                ASTC_ENCODER_PATH = ASTC_ENCODER_PATH.replace('/', '\\');
+                DWEBP_PATH = DWEBP_PATH.replace('/', '\\');
+            case 'Linux':
+                if (ARCHITECTURE == Architecture.X64)
+                {
+                    ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Linux/x64/astcenc-sse2']);
+                    DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Linux/x64/dwebp']);
+                }
+                else if (ARCHITECTURE == Architecture.ARM64)
+                {
+                    ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Linux/arm64/astcenc-neon']);
+                    DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Linux/arm64/dwebp']);
+                }
+            case 'Mac':
+                ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/MacOS/astcenc']);
+                DWEBP_PATH = Path.join([LIB_PATH, 'plugins/MacOS/dwebp']);
+        }
 
-		if (ASTC_ENCODER_PATH.length <= 0)
-		{
-			Sys.println(ANSIUtil.apply('Could not determine ASTC encoder path for this platform/architecture.', [Red]));
-			Sys.exit(1);
-		}
-		else if (!FileSystem.exists(ASTC_ENCODER_PATH))
-		{
-			Sys.println(ANSIUtil.apply('Could not find ASTC encoder at: "$ASTC_ENCODER_PATH".', [Red]));
-			Sys.exit(1);
-		}
-		else if (FileSystem.exists(ASTC_ENCODER_PATH))
-		{
-			if (Sys.systemName() == 'Linux' || Sys.systemName() == 'Mac')
-				ProcessUtil.runCommand('chmod', ['+x', ASTC_ENCODER_PATH]);
-		}
-	}
+        if (ASTC_ENCODER_PATH.length <= 0)
+        {
+            Sys.println(ANSIUtil.apply('Could not determine ASTC encoder path for this platform/architecture.', [Red]));
+            Sys.exit(1);
+        }
+        else if (!FileSystem.exists(ASTC_ENCODER_PATH))
+        {
+            Sys.println(ANSIUtil.apply('Could not find ASTC encoder at: "$ASTC_ENCODER_PATH".', [Red]));
+            Sys.exit(1);
+        }
+        else if (FileSystem.exists(ASTC_ENCODER_PATH))
+        {
+            if (Sys.systemName() == 'Linux' || Sys.systemName() == 'Mac')
+                ProcessUtil.runCommand('chmod', ['+x', ASTC_ENCODER_PATH]);
+        }
+
+        if (DWEBP_PATH.length > 0 && FileSystem.exists(DWEBP_PATH))
+        {
+            if (Sys.systemName() == 'Linux' || Sys.systemName() == 'Mac')
+                ProcessUtil.runCommand('chmod', ['+x', DWEBP_PATH]);
+        }
+    }
 
 	@:noCompletion
 	private static function compressCommand(colorprofile:String, input:String, blockSize:String, quality:String, ?output:String, ?excludes:String,
@@ -426,24 +441,53 @@ class Main
 	}
 
 	private static function compressFile(colorprofile:String, file:String, output:Null<String>, blockSize:String, quality:String, extraLogs:Bool = false):Void
-	{
-		var outputFile:String = Path.withExtension(file, 'astc');
+    {
+        var outputFile:String = Path.withExtension(file, 'astc');
 
-		if (output != null && output.length > 0)
-			outputFile = Path.join([output, outputFile]);
+        if (output != null && output.length > 0)
+            outputFile = Path.join([output, outputFile]);
 
-		if (FileSystem.exists(outputFile))
-			return;
+        if (FileSystem.exists(outputFile))
+            return;
 
-		FileUtil.createDirectory(Path.directory(outputFile));
+        FileUtil.createDirectory(Path.directory(outputFile));
 
-		if (extraLogs)
-			Sys.println('  - ${ANSIUtil.apply(file, [Black, Bold])} as ${ANSIUtil.apply(outputFile, [Yellow])} (${ANSIUtil.apply(quality + ' - ' + blockSize, [Green, Bold])})');
-		else
-			Sys.println('  - ${ANSIUtil.apply(file, [Black, Bold])} as ${ANSIUtil.apply(outputFile, [Yellow])}');
+        if (extraLogs)
+            Sys.println('  - ${ANSIUtil.apply(file, [Black, Bold])} as ${ANSIUtil.apply(outputFile, [Yellow])} (${ANSIUtil.apply(quality + ' - ' + blockSize, [Green, Bold])})');
+        else
+            Sys.println('  - ${ANSIUtil.apply(file, [Black, Bold])} as ${ANSIUtil.apply(outputFile, [Yellow])}');
 
-		ProcessUtil.runCommand(ASTC_ENCODER_PATH, ['-$colorprofile', file, outputFile, blockSize, '-$quality', '-silent']);
-	}
+        final path:Path = new Path(file);
+        var sourceFileToCompress:String = file;
+        var tempPngPath:Null<String> = null;
+
+        if (path.ext != null && path.ext.toLowerCase() == 'webp')
+        {
+            tempPngPath = Path.withExtension(file, 'temp.png');
+            
+            final webpEncoderCommand:String = (DWEBP_PATH.length > 0 && FileSystem.exists(DWEBP_PATH)) ? DWEBP_PATH : 'dwebp';
+            final exitCode:Int = ProcessUtil.runCommand(webpEncoderCommand, [file, '-o', tempPngPath]);
+            
+            if (exitCode != 0 || !FileSystem.exists(tempPngPath))
+            {
+                Sys.println(ANSIUtil.apply('  [Error] Failed to decompress WebP file: ' + file, [Red]));
+                return;
+            }
+            
+            sourceFileToCompress = tempPngPath;
+        }
+
+        ProcessUtil.runCommand(ASTC_ENCODER_PATH, ['-$colorprofile', sourceFileToCompress, outputFile, blockSize, '-$quality', '-silent']);
+
+        if (tempPngPath != null && FileSystem.exists(tempPngPath))
+        {
+            try {
+                FileSystem.deleteFile(tempPngPath);
+            } catch(e:Dynamic) {
+				trace(e);
+            }
+        }
+    }
 
 	@:noCompletion
 	private static function rebuildCommand():Void
@@ -499,7 +543,7 @@ class Main
 		Sys.println('  - Use ${ANSIUtil.apply('4x4', [Yellow])} block size for best quality; ${ANSIUtil.apply('8x8', [Yellow])} for best performance.');
 		Sys.println('  - ASTC color profiles: ${ANSIUtil.apply('cl', [Magenta])} (LDR linear), ${ANSIUtil.apply('cs', [Magenta])} (LDR sRGB), ${ANSIUtil.apply('ch', [Magenta])} (HDR), ${ANSIUtil.apply('cH', [Magenta])} (HDR RGB + LDR A).');
 		Sys.println('  - Use relative paths (e.g., ${ANSIUtil.apply('./', [Blue])}) to avoid file access issues.');
-		Sys.println('  - The compressor supports BMP, JPG, PNG, TGA, HDR, EXR input formats.');
+		Sys.println('  - The compressor supports BMP, JPG, PNG, TGA, HDR, EXR, WEBP input formats.');
 	}
 
 	@:noCompletion
