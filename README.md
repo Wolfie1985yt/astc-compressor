@@ -62,4 +62,6 @@ This project includes prebuilt `astcenc` binaries from the [ASTC Encoder project
 
 The binaries are included inside the [plugins](./plugins) folder.
 
+`WEBP` and `JXL` inputs are decoded to a temporary PNG before compression, using `dwebp` (from [libwebp](https://chromium.googlesource.com/webm/libwebp)) and `djxl` (from [libjxl](https://github.com/libjxl/libjxl)) respectively. astcenc has no native decoder for either format, so these tools are looked up in `plugins/<OS>/<arch>/` first, falling back to the same-named command on `PATH` if not bundled.
+
 See [plugins/LICENSE-ARM.txt](./plugins/LICENSE-ARM.txt) for a copy of the ASTC Encoder license.

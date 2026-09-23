@@ -23,7 +23,7 @@ class Main
 	private static final VERSION:String = '1.0.0';
 
 	@:noCompletion
-	private static final SUPPORTED_EXTENSIONS:Array<String> = ['bmp', 'jpg', 'jpeg', 'jpe', 'jfif', 'png', 'tga', 'hdr', 'exr', 'webp'];
+	private static final SUPPORTED_EXTENSIONS:Array<String> = ['bmp', 'jpg', 'jpeg', 'jpe', 'jfif', 'png', 'tga', 'hdr', 'exr', 'webp', 'jxl'];
 
 	@:noCompletion
 	private static final COMPRESSION:Array<String> = ['exhaustive', 'verythorough', 'thorough', 'medium', 'fast', 'fastest'];
@@ -45,6 +45,9 @@ class Main
 
 	@:noCompletion
 	private static var DWEBP_PATH:String = '';
+
+	@:noCompletion
+	private static var DJXL_PATH:String = '';
 
 	@:noCompletion
 	private static var COMPRESSION_DATA:Null<ComppressionData> = null;
@@ -200,29 +203,35 @@ class Main
                 {
                     ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Windows/x64/astcenc-sse2.exe']);
                     DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Windows/x64/dwebp.exe']);
+                    DJXL_PATH = Path.join([LIB_PATH, 'plugins/Windows/x64/djxl.exe']);
                 }
                 else if (ARCHITECTURE == Architecture.ARM64)
                 {
                     ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Windows/arm64/astcenc-neon.exe']);
                     DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Windows/arm64/dwebp.exe']);
+                    DJXL_PATH = Path.join([LIB_PATH, 'plugins/Windows/arm64/djxl.exe']);
                 }
 
                 ASTC_ENCODER_PATH = ASTC_ENCODER_PATH.replace('/', '\\');
                 DWEBP_PATH = DWEBP_PATH.replace('/', '\\');
+                DJXL_PATH = DJXL_PATH.replace('/', '\\');
             case 'Linux':
                 if (ARCHITECTURE == Architecture.X64)
                 {
                     ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Linux/x64/astcenc-sse2']);
                     DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Linux/x64/dwebp']);
+                    DJXL_PATH = Path.join([LIB_PATH, 'plugins/Linux/x64/djxl']);
                 }
                 else if (ARCHITECTURE == Architecture.ARM64)
                 {
                     ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/Linux/arm64/astcenc-neon']);
                     DWEBP_PATH = Path.join([LIB_PATH, 'plugins/Linux/arm64/dwebp']);
+                    DJXL_PATH = Path.join([LIB_PATH, 'plugins/Linux/arm64/djxl']);
                 }
             case 'Mac':
                 ASTC_ENCODER_PATH = Path.join([LIB_PATH, 'plugins/MacOS/astcenc']);
                 DWEBP_PATH = Path.join([LIB_PATH, 'plugins/MacOS/dwebp']);
+                DJXL_PATH = Path.join([LIB_PATH, 'plugins/MacOS/djxl']);
         }
 
         if (ASTC_ENCODER_PATH.length <= 0)
@@ -245,6 +254,12 @@ class Main
         {
             if (Sys.systemName() == 'Linux' || Sys.systemName() == 'Mac')
                 ProcessUtil.runCommand('chmod', ['+x', DWEBP_PATH]);
+        }
+
+        if (DJXL_PATH.length > 0 && FileSystem.exists(DJXL_PATH))
+        {
+            if (Sys.systemName() == 'Linux' || Sys.systemName() == 'Mac')
+                ProcessUtil.runCommand('chmod', ['+x', DJXL_PATH]);
         }
     }
 
@@ -464,16 +479,31 @@ class Main
         if (path.ext != null && path.ext.toLowerCase() == 'webp')
         {
             tempPngPath = Path.withExtension(file, 'temp.png');
-            
+
             final webpEncoderCommand:String = (DWEBP_PATH.length > 0 && FileSystem.exists(DWEBP_PATH)) ? DWEBP_PATH : 'dwebp';
             final exitCode:Int = ProcessUtil.runCommand(webpEncoderCommand, [file, '-o', tempPngPath]);
-            
+
             if (exitCode != 0 || !FileSystem.exists(tempPngPath))
             {
                 Sys.println(ANSIUtil.apply('  [Error] Failed to decompress WebP file: ' + file, [Red]));
                 return;
             }
-            
+
+            sourceFileToCompress = tempPngPath;
+        }
+        else if (path.ext != null && path.ext.toLowerCase() == 'jxl')
+        {
+            tempPngPath = Path.withExtension(file, 'temp.png');
+
+            final jxlDecoderCommand:String = (DJXL_PATH.length > 0 && FileSystem.exists(DJXL_PATH)) ? DJXL_PATH : 'djxl';
+            final exitCode:Int = ProcessUtil.runCommand(jxlDecoderCommand, [file, tempPngPath]);
+
+            if (exitCode != 0 || !FileSystem.exists(tempPngPath))
+            {
+                Sys.println(ANSIUtil.apply('  [Error] Failed to decompress JPEG XL file: ' + file, [Red]));
+                return;
+            }
+
             sourceFileToCompress = tempPngPath;
         }
 
@@ -543,7 +573,8 @@ class Main
 		Sys.println('  - Use ${ANSIUtil.apply('4x4', [Yellow])} block size for best quality; ${ANSIUtil.apply('8x8', [Yellow])} for best performance.');
 		Sys.println('  - ASTC color profiles: ${ANSIUtil.apply('cl', [Magenta])} (LDR linear), ${ANSIUtil.apply('cs', [Magenta])} (LDR sRGB), ${ANSIUtil.apply('ch', [Magenta])} (HDR), ${ANSIUtil.apply('cH', [Magenta])} (HDR RGB + LDR A).');
 		Sys.println('  - Use relative paths (e.g., ${ANSIUtil.apply('./', [Blue])}) to avoid file access issues.');
-		Sys.println('  - The compressor supports BMP, JPG, PNG, TGA, HDR, EXR, WEBP input formats.');
+		Sys.println('  - The compressor supports BMP, JPG, PNG, TGA, HDR, EXR, WEBP, JXL input formats.');
+		Sys.println('  - WEBP and JXL inputs require the ${ANSIUtil.apply('dwebp', [Yellow])} / ${ANSIUtil.apply('djxl', [Yellow])} tools to be bundled in "plugins" or available on PATH.');
 	}
 
 	@:noCompletion
