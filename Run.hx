@@ -1,23 +1,24 @@
 package;
 
-import sys.io.File;
-
-import util.ProcessUtil;
+import compressor.Progress;
+import compressor.util.ANSIUtil;
+import compressor.util.CPUUtil;
+import compressor.util.FileUtil;
+import compressor.util.ProcessUtil;
 
 import haxe.Json;
-import haxe.io.Path;
+import haxe.crypto.Md5;
 import haxe.ds.Map;
+import haxe.io.Bytes;
+import haxe.io.Path;
 
 import sys.FileSystem;
-
-import util.ANSIUtil;
-import util.CPUUtil;
-import util.FileUtil;
+import sys.io.File;
 
 using StringTools;
 
 @:nullSafety
-class Main
+class Run
 {
 	@:noCompletion
 	private static final VERSION:String = '1.0.0';
@@ -50,7 +51,7 @@ class Main
 	private static var DJXL_PATH:String = '';
 
 	@:noCompletion
-	private static var COMPRESSION_DATA:Null<ComppressionData> = null;
+	private static var COMPRESSION_DATA:Null<CompressionData> = null;
 
 	@:noCompletion
 	private static var CUSTOM_COMPRESSION_DATA:Null<Map<String, CustomCompressionAsset>> = null;
@@ -121,7 +122,8 @@ class Main
 						if (hasColorProfile && hasInput && hasBlocksize && hasQuality)
 						{
 							@:nullSafety(Off)
-							compressCommand(colorprofile, input, blocksize, quality, options.get('o'), options.get('excludes'), options.exists('clean'));
+							compressCommand(colorprofile, input, blocksize, quality, options.get('o'), options.get('excludes'),
+								options.exists('premultiplyAlpha'), options.exists('clean'));
 						}
 						else
 						{
@@ -148,7 +150,7 @@ class Main
 						{
 							parseCompressionJSON(jsonFile);
 							prepareEncoder();
-							compressFromJSONCommand();
+							compressFromJSONCommand(options.exists('clean'));
 						}
 						else
 						{
@@ -157,9 +159,6 @@ class Main
 
 							Sys.exit(1);
 						}
-					case 'rebuild':
-						printTitle();
-						rebuildCommand();
 					case 'help':
 						printTitle();
 						helpCommand();
@@ -265,7 +264,7 @@ class Main
 
 	@:noCompletion
 	private static function compressCommand(colorprofile:String, input:String, blockSize:String, quality:String, ?output:String, ?excludes:String,
-			?clean:Bool):Void
+			premultiplyAlpha:Bool, clean:Bool):Void
 	{
 		if (clean && (output != null && output.length > 0 && FileSystem.exists(output) && FileUtil.isDirectory(output)))
 			FileUtil.deletePath(output);
@@ -302,11 +301,13 @@ class Main
 							if (output != null && output.length > 0)
 								outputFile = Path.join([output, outputFile]);
 
-							final doesOutputedExist:Bool = FileSystem.exists(outputFile);
 							final supportedExtension:Bool = SUPPORTED_EXTENSIONS.contains(path.ext);
-							final excluded:Bool = isExcluded(path.toString(), excludedFiles);
 
-							return !doesOutputedExist && supportedExtension && !excluded;
+							if (!supportedExtension)
+								return false;
+
+							return needsRecompiled(f, outputFile, blockSize, quality, colorprofile, premultiplyAlpha, [])
+								&& !isExcluded(path.toString(), excludedFiles);
 						}
 					}
 
@@ -317,11 +318,13 @@ class Main
 				{
 					printTitle();
 
-					Sys.println('- ${ANSIUtil.apply('${ANSIUtil.apply('Compressing:', [Black, Bold])} colorProfile=${ANSIUtil.apply(colorprofile, [Yellow])} blockSize=${ANSIUtil.apply(blockSize, [Yellow])} quality=${ANSIUtil.apply(quality, [Yellow])}', [White, Bold])}');
+					final progress:Progress = new Progress(0, files.length);
+
+					Sys.println('- ${ANSIUtil.apply('${ANSIUtil.apply('Compressing: (${progress.total} file${progress.total > 1 ? 's' : ''})', [Black, Bold])} colorProfile=${ANSIUtil.apply(colorprofile, [Yellow])} blockSize=${ANSIUtil.apply(blockSize, [Yellow])} quality=${ANSIUtil.apply(quality, [Yellow])} premultiplyAlpha=${ANSIUtil.apply(premultiplyAlpha, [Yellow])}', [White, Bold])}');
 
 					for (file in files)
 					{
-						compressFile(colorprofile, file, output, blockSize, quality);
+						compressFile(progress, colorprofile, file, output, blockSize, quality, premultiplyAlpha, []);
 					}
 				}
 			}
@@ -335,9 +338,9 @@ class Main
 				{
 					if (SUPPORTED_EXTENSIONS.contains(path.ext))
 					{
-						Sys.println('- ${ANSIUtil.apply('${ANSIUtil.apply('Compressing:', [Black, Bold])} colorProfile=${ANSIUtil.apply(colorprofile, [Yellow])} blockSize=${ANSIUtil.apply(blockSize, [Yellow])} quality=${ANSIUtil.apply(quality, [Yellow])}', [White, Bold])}');
+						Sys.println('- ${ANSIUtil.apply('${ANSIUtil.apply('Compressing:', [Black, Bold])} colorProfile=${ANSIUtil.apply(colorprofile, [Yellow])} blockSize=${ANSIUtil.apply(blockSize, [Yellow])} quality=${ANSIUtil.apply(quality, [Yellow])} premultiplyAlpha=${ANSIUtil.apply(premultiplyAlpha, [Yellow])}', [White, Bold])}');
 
-						compressFile(colorprofile, path.toString(), output, blockSize, quality);
+						compressFile(colorprofile, path.toString(), output, blockSize, quality, premultiplyAlpha, []);
 					}
 					else
 					{
@@ -360,7 +363,7 @@ class Main
 	}
 
 	@:noCompletion
-	private static function compressFromJSONCommand():Void
+	private static function compressFromJSONCommand(clean:Bool):Void
 	{
 		if (COMPRESSION_DATA == null)
 			return;
@@ -371,7 +374,8 @@ class Main
 		var quality:String = COMPRESSION_DATA.quality;
 		var output:String = COMPRESSION_DATA.output;
 		var excludes:Null<Array<String>> = COMPRESSION_DATA.excludes;
-		var clean:Null<Bool> = COMPRESSION_DATA.clean ?? false;
+		var premultiplyAlpha:Bool = COMPRESSION_DATA.premultiplyAlpha ?? false;
+		var extraParams:Array<String> = COMPRESSION_DATA.extraParams ?? [];
 
 		if (clean && (output != null && output.length > 0 && FileSystem.exists(output) && FileUtil.isDirectory(output)))
 			FileUtil.deletePath(output);
@@ -406,11 +410,28 @@ class Main
 							if (output != null && output.length > 0)
 								outputFile = Path.join([output, outputFile]);
 
-							final doesOutputedExist:Bool = FileSystem.exists(outputFile);
 							final supportedExtension:Bool = SUPPORTED_EXTENSIONS.contains(path.ext);
-							final excluded:Bool = isExcluded(path.toString(), excludedFiles);
 
-							return !doesOutputedExist && supportedExtension && !excluded;
+							if (!supportedExtension)
+								return false;
+
+							var shouldRecompile:Bool = true;
+							final customDataKey:Null<String> = getCustomDataKey(f);
+
+							if (customDataKey != null && CUSTOM_COMPRESSION_DATA != null)
+							{
+								var customData:Null<CustomCompressionAsset> = CUSTOM_COMPRESSION_DATA.get(customDataKey);
+
+								@:nullSafety(Off)
+								shouldRecompile = needsRecompiled(f, outputFile, customData.blocksize ?? blockSize, customData.quality ?? quality,
+									customData.colorprofile ?? colorprofile, customData.premultiplyAlpha ?? premultiplyAlpha,
+									customData.extraParams == null ? extraParams : customData.extraParams.concat(extraParams));
+							}
+							else
+							{
+								shouldRecompile = needsRecompiled(f, outputFile, blockSize, quality, colorprofile, premultiplyAlpha, extraParams);
+							}
+							return shouldRecompile && !isExcluded(path.toString(), excludedFiles);
 						}
 					}
 
@@ -421,23 +442,26 @@ class Main
 				{
 					printTitle();
 
-					Sys.println('- ${ANSIUtil.apply('${ANSIUtil.apply('Compressing:', [Black, Bold])} colorProfile=${ANSIUtil.apply(colorprofile, [Yellow])} blockSize=${ANSIUtil.apply(blockSize, [Yellow])} quality=${ANSIUtil.apply(quality, [Yellow])}', [White, Bold])}');
+					final progress:Progress = new Progress(0, files.length);
+
+					Sys.println('- ${ANSIUtil.apply('${ANSIUtil.apply('Compressing: (${progress.total} file${progress.total > 1 ? 's' : ''})', [Black, Bold])} colorProfile=${ANSIUtil.apply(colorprofile, [Yellow])} blockSize=${ANSIUtil.apply(blockSize, [Yellow])} quality=${ANSIUtil.apply(quality, [Yellow])} premultiplyAlpha=${ANSIUtil.apply(premultiplyAlpha, [Yellow])}', [White, Bold])}');
 
 					for (file in files)
 					{
-						var customDataKey:Null<String> = getCustomDataKey(file);
+						final customDataKey:Null<String> = getCustomDataKey(file);
 
 						if (customDataKey != null && CUSTOM_COMPRESSION_DATA != null)
 						{
 							var customData:Null<CustomCompressionAsset> = CUSTOM_COMPRESSION_DATA.get(customDataKey);
 
 							@:nullSafety(Off)
-							compressFile(customData.colorprofile ?? colorprofile, file, output, customData.blocksize ?? blockSize,
-								customData.quality ?? quality, true);
+							compressFile(progress, customData.colorprofile ?? colorprofile, file, output, customData.blocksize ?? blockSize,
+								customData.quality ?? quality, customData.premultiplyAlpha ?? premultiplyAlpha,
+								customData.extraParams == null ? extraParams : customData.extraParams.concat(extraParams), true);
 						}
 						else
 						{
-							compressFile(colorprofile, file, output, blockSize, quality, false);
+							compressFile(progress, colorprofile, file, output, blockSize, quality, premultiplyAlpha, extraParams, false);
 						}
 					}
 				}
@@ -455,88 +479,116 @@ class Main
 		}
 	}
 
-	private static function compressFile(colorprofile:String, file:String, output:Null<String>, blockSize:String, quality:String, extraLogs:Bool = false):Void
-    {
-        var outputFile:String = Path.withExtension(file, 'astc');
+	private static function compressFile(?progress:Progress, colorprofile:String, file:String, output:Null<String>, blockSize:String, quality:String,
+			premultiplyAlpha:Bool, extraParams:Array<String>, extraLogs:Bool = false):Void
+	{
+		var outputFile:String = Path.withExtension(file, 'astc');
 
         if (output != null && output.length > 0)
             outputFile = Path.join([output, outputFile]);
 
-        if (FileSystem.exists(outputFile))
-            return;
+		FileUtil.createDirectory(Path.directory(outputFile));
 
-        FileUtil.createDirectory(Path.directory(outputFile));
-
-        if (extraLogs)
-            Sys.println('  - ${ANSIUtil.apply(file, [Black, Bold])} as ${ANSIUtil.apply(outputFile, [Yellow])} (${ANSIUtil.apply(quality + ' - ' + blockSize, [Green, Bold])})');
-        else
-            Sys.println('  - ${ANSIUtil.apply(file, [Black, Bold])} as ${ANSIUtil.apply(outputFile, [Yellow])}');
-
-        final path:Path = new Path(file);
-        var sourceFileToCompress:String = file;
-        var tempPngPath:Null<String> = null;
-
-        if (path.ext != null && path.ext.toLowerCase() == 'webp')
-        {
-            tempPngPath = Path.withExtension(file, 'temp.png');
-
-            final webpEncoderCommand:String = (DWEBP_PATH.length > 0 && FileSystem.exists(DWEBP_PATH)) ? DWEBP_PATH : 'dwebp';
-            final exitCode:Int = ProcessUtil.runCommand(webpEncoderCommand, [file, '-o', tempPngPath]);
-
-            if (exitCode != 0 || !FileSystem.exists(tempPngPath))
-            {
-                Sys.println(ANSIUtil.apply('  [Error] Failed to decompress WebP file: ' + file, [Red]));
-                return;
-            }
-
-            sourceFileToCompress = tempPngPath;
-        }
-        else if (path.ext != null && path.ext.toLowerCase() == 'jxl')
-        {
-            tempPngPath = Path.withExtension(file, 'temp.png');
-
-            final jxlDecoderCommand:String = (DJXL_PATH.length > 0 && FileSystem.exists(DJXL_PATH)) ? DJXL_PATH : 'djxl';
-            final exitCode:Int = ProcessUtil.runCommand(jxlDecoderCommand, [file, tempPngPath]);
-
-            if (exitCode != 0 || !FileSystem.exists(tempPngPath))
-            {
-                Sys.println(ANSIUtil.apply('  [Error] Failed to decompress JPEG XL file: ' + file, [Red]));
-                return;
-            }
-
-            sourceFileToCompress = tempPngPath;
-        }
-
-        ProcessUtil.runCommand(ASTC_ENCODER_PATH, ['-$colorprofile', sourceFileToCompress, outputFile, blockSize, '-$quality', '-silent']);
-
-        if (tempPngPath != null && FileSystem.exists(tempPngPath))
-        {
-            try {
-                FileSystem.deleteFile(tempPngPath);
-            } catch(e:Dynamic) {
-				trace(e);
-            }
-        }
-    }
-
-	@:noCompletion
-	private static function rebuildCommand():Void
-	{
-		final oldCwd:String = Sys.getCwd();
-
-		Sys.setCwd(LIB_PATH);
-
-		final result:Int = ProcessUtil.runCommand('haxe', ['build.hxml']);
-
-		Sys.setCwd(oldCwd);
-
-		if (result != 0)
+		if (progress != null)
 		{
-			Sys.println(ANSIUtil.apply('Failed to rebuild.', [Red]));
-			Sys.exit(result);
+			progress.current++;
+
+			if (extraLogs)
+				Sys.println('  - ${progress.getFormattedProgress()} ${prettyOutputFile(outputFile)} (${ANSIUtil.apply(quality + ' - ' + blockSize + ' - ' + '${premultiplyAlpha ? 'Premultiplying Alpha' : 'No Alpha Premultiplication'}', [Green, Bold])})');
+			else
+				Sys.println('  - ${progress.getFormattedProgress()} ${prettyOutputFile(outputFile)}');
 		}
 		else
-			Sys.println(ANSIUtil.apply('Successfully rebuilt "astc-compressor" runner.', [Green]));
+		{
+			if (extraLogs)
+				Sys.println('  - ${prettyOutputFile(outputFile)} (${ANSIUtil.apply(quality + ' - ' + blockSize + ' - ' + '${premultiplyAlpha ? 'Premultiplying Alpha' : 'No Alpha Premultiplication'}', [Green, Bold])})');
+			else
+				Sys.println('  - ${prettyOutputFile(outputFile)}');
+		}
+
+		final path:Path = new Path(file);
+		var sourceFileToCompress:String = file;
+		var tempPngPath:Null<String> = null;
+
+		if (path.ext != null && path.ext.toLowerCase() == 'webp')
+		{
+			tempPngPath = Path.withExtension(file, 'temp.png');
+
+			final webpDecoderCommand:String = (DWEBP_PATH.length > 0 && FileSystem.exists(DWEBP_PATH)) ? DWEBP_PATH : 'dwebp';
+			final exitCode:Int = ProcessUtil.runCommand(webpDecoderCommand, [file, '-o', tempPngPath]);
+
+			if (exitCode != 0 || !FileSystem.exists(tempPngPath))
+			{
+				Sys.println(ANSIUtil.apply('  [Error] Failed to decompress WebP file: ' + file, [Red]));
+				return;
+			}
+
+			sourceFileToCompress = tempPngPath;
+		}
+		else if (path.ext != null && path.ext.toLowerCase() == 'jxl')
+		{
+			tempPngPath = Path.withExtension(file, 'temp.png');
+
+			final jxlDecoderCommand:String = (DJXL_PATH.length > 0 && FileSystem.exists(DJXL_PATH)) ? DJXL_PATH : 'djxl';
+			final exitCode:Int = ProcessUtil.runCommand(jxlDecoderCommand, [file, tempPngPath]);
+
+			if (exitCode != 0 || !FileSystem.exists(tempPngPath))
+			{
+				Sys.println(ANSIUtil.apply('  [Error] Failed to decompress JPEG XL file: ' + file, [Red]));
+				return;
+			}
+
+			sourceFileToCompress = tempPngPath;
+		}
+
+		var args:Array<String> = [];
+		args.push('-$colorprofile');
+		args.push(sourceFileToCompress);
+		args.push(outputFile);
+		args.push(blockSize);
+		args.push('-$quality');
+		args.push('-silent');
+		if (premultiplyAlpha)
+			args.push('-pp-premultiply');
+		args = args.concat(extraParams);
+
+		ProcessUtil.runCommand(ASTC_ENCODER_PATH, args);
+
+		if (tempPngPath != null && FileSystem.exists(tempPngPath))
+		{
+			try
+			{
+				FileSystem.deleteFile(tempPngPath);
+			}
+			catch (e:Dynamic)
+			{
+				trace(e);
+			}
+		}
+
+		final hashData = Bytes.ofString(createHash(file, blockSize, quality, colorprofile, premultiplyAlpha, extraParams));
+		final output = File.write(Path.withExtension(outputFile, 'hash'), true);
+		output.writeInt32(hashData.length);
+		output.write(hashData);
+		output.close();
+	}
+
+	@:noCompletion
+	private static function prettyOutputFile(s:String):String
+	{
+		var outputFile:String = s;
+
+		{
+			var split:Array<String> = outputFile.split('/');
+
+			if (split.length > 1)
+				outputFile = ANSIUtil.apply('${split.slice(0, split.length - 1).join('/')}/${ANSIUtil.applyModifierToCode(Yellow, 1)}${split[split.length - 1]}',
+					[Yellow]);
+			else
+				outputFile = ANSIUtil.apply(outputFile, [ANSIUtil.applyModifierToCode(Yellow, 1)]);
+		}
+
+		return outputFile;
 	}
 
 	@:noCompletion
@@ -548,7 +600,6 @@ class Main
 		Sys.println('- ${ANSIUtil.apply('Commands:', [Cyan, Bold])}');
 		Sys.println('  ${ANSIUtil.apply('compress', [Green])}             Compress images in the specified directory or file.');
 		Sys.println('  ${ANSIUtil.apply('compress-from-json', [Green])}   Use data from a JSON file to compress images in a specified directory.');
-		Sys.println('  ${ANSIUtil.apply('rebuild', [Green])}              Rebuilds the Haxe runner.');
 		Sys.println('  ${ANSIUtil.apply('help', [Green])}                 Displays this help message.');
 		Sys.println('');
 
@@ -559,6 +610,7 @@ class Main
 		Sys.println('  ${ANSIUtil.apply('-quality <level>', [Green])}             Compression quality level: ${ANSIUtil.apply('fastest', [Magenta])}, ${ANSIUtil.apply('fast', [Magenta])}, ${ANSIUtil.apply('medium', [Magenta])}, ${ANSIUtil.apply('thorough', [Magenta])}, ${ANSIUtil.apply('exhaustive', [Magenta])}');
 		Sys.println('  ${ANSIUtil.apply('-o <output>', [Green])}                  (Optional) Output directory for .astc files.');
 		Sys.println('  ${ANSIUtil.apply('-excludes <file>', [Green])}             (Optional) File with list of input paths to skip.');
+		Sys.println('  ${ANSIUtil.apply('-premultiplyAlpha', [Green])}            (Optional) Enable alpha premultiplying.');
 		Sys.println('  ${ANSIUtil.apply('-clean', [Green])}                       (Optional) Clean output directory before compressing.');
 		Sys.println('');
 
@@ -584,20 +636,15 @@ class Main
 		{
 			if (exclusion.endsWith("/"))
 			{
-				var normalizedFilePath = Path.normalize(file);
-				var normalizedExclusion = Path.normalize(exclusion);
-
-				if (normalizedFilePath.startsWith(normalizedExclusion))
-				{
+				if (file.startsWith(exclusion))
 					return true;
-				}
 			}
 			else if (exclusion.endsWith("/*"))
 			{
-				var normalizedExclusion = Path.normalize(exclusion.substr(0, exclusion.length - 2));
-				var fileDirectory = Path.directory(Path.normalize(file));
+				exclusion = exclusion.substr(0, exclusion.length - 2);
+				var fileDirectory = Path.directory(file);
 
-				if (fileDirectory == normalizedExclusion)
+				if (fileDirectory == exclusion)
 				{
 					return true;
 				}
@@ -612,6 +659,47 @@ class Main
 		}
 
 		return false;
+	}
+
+	@:noCompletion
+	private static function needsRecompiled(input:String, output:String, blocksize:String, quality:String, colorprofile:String, premultiplyAlpha:Bool,
+			extraParams:Array<String>):Bool
+	{
+		if (!FileSystem.exists(output))
+			return true;
+
+		final outputHashFilePath:String = Path.withExtension(output, 'hash');
+
+		if (FileSystem.exists(outputHashFilePath))
+		{
+			final outputHashFile = File.read(outputHashFilePath);
+			final dataLength = outputHashFile.readInt32();
+
+			final outputHash:String = outputHashFile.read(dataLength).toString().trim();
+			final inputHash:String = createHash(input, blocksize, quality, colorprofile, premultiplyAlpha, extraParams);
+			outputHashFile.close();
+
+			return inputHash != outputHash;
+		}
+
+		return true;
+	}
+
+	@:noCompletion
+	private static function createHash(path:String, blocksize:String, quality:String, colorprofile:String, premultiplyAlpha:Bool,
+			extraParams:Array<String>):String
+	{
+		var astcFormatList:Array<String> = [];
+		astcFormatList.push(path);
+		astcFormatList.push(blocksize);
+		astcFormatList.push(quality);
+		astcFormatList.push(colorprofile);
+		astcFormatList.push(premultiplyAlpha ? 'true' : 'false');
+		astcFormatList = astcFormatList.concat(extraParams);
+		var astcFormat:String = astcFormatList.join('//');
+		var astcData:Bytes = Bytes.ofString(astcFormat);
+		var sourceData:Bytes = File.getBytes(path);
+		return '${Md5.make(sourceData).toHex() + Md5.make(astcData).toHex()}'.trim();
 	}
 
 	@:noCompletion
@@ -710,14 +798,15 @@ class Main
 	}
 }
 
-typedef ComppressionData =
+typedef CompressionData =
 {
 	public var input:String;
 	public var output:String;
 	public var blocksize:String;
 	public var quality:String;
 	public var colorprofile:String;
-	@:optional public var clean:Bool;
+	@:optional public var premultiplyAlpha:Bool;
+	@:optional public var extraParams:Array<String>;
 	@:optional public var excludes:Array<String>;
 	@:optional public var custom:Array<CustomCompressionAsset>;
 }
@@ -728,4 +817,6 @@ typedef CustomCompressionAsset =
 	@:optional public var blocksize:String;
 	@:optional public var quality:String;
 	@:optional public var colorprofile:String;
+	@:optional public var premultiplyAlpha:Bool;
+	@:optional public var extraParams:Array<String>;
 }
